@@ -42,10 +42,30 @@ const octokit = new Octokit({ auth: GITHUB_PAT });
  */
 async function generateAppWithLLM(brief) {
     console.log("Generating app content with LLM...");
-    const systemPrompt = `You are an expert web developer specializing in creating single-file, self-contained HTML applications.
-    You must use Tailwind CSS for styling, loaded from the official CDN. All HTML, CSS, and JavaScript must be included in a single index.html file.
-    The application should be visually appealing, responsive, and fully functional based on the user's brief. Do not include any placeholder comments like "<!-- Your code here -->".
-    Your response should be ONLY the HTML code, starting with <!DOCTYPE html> and nothing else.`;
+    const systemPrompt = `You are an expert web developer. You can produce either a single self-contained HTML application or multiple files when needed.
+    Preferred behavior:
+    - If the task is a single-page app, you MAY return only the HTML content starting with <!DOCTYPE html> (a single-file app using Tailwind CDN).
+    - If the app requires multiple files (for example assets, separate JS/CSS, or a README), emit each file using the exact marker format below. Do NOT include any other text outside the file markers.
+
+    Marker format (exact):
+    <<<FILE: path/to/filename.ext>>>
+    <file contents (raw, verbatim)>
+    <<<END_FILE>>>
+
+    Example with two files:
+    <<<FILE: index.html>>>
+    <!DOCTYPE html>...HTML content...
+    <<<END_FILE>>>
+    <<<FILE: README.md>>>
+    # Title\nThis repository contains...\n
+    <<<END_FILE>>>
+
+    Requirements:
+    - Filenames must be valid relative paths (no absolute paths).
+    - If you return a single-file HTML, it must start with <!DOCTYPE html> and contain all CSS/JS inline or via CDN.
+    - If you include a README.md file, make it helpful and include a short usage note.
+    - The output MUST be either pure HTML (single-file) or only the file marker blocks above. No explanation or extra text.
+`;
 
     const userQuery = `Create an application based on this brief: "${brief}"`;
     // Determine final OpenAI-compatible endpoint and key
@@ -126,7 +146,25 @@ async function generateAppWithLLM(brief) {
 
         console.log('LLM content generated successfully.');
         // Clean up potential markdown formatting from the LLM response
-        return generatedText.replace(/```html/g, '').replace(/```/g, '').trim();
+        const cleaned = generatedText.replace(/```html/g, '').replace(/```/g, '').trim();
+
+        // If the response contains file markers (<<<FILE: ...>>>), parse into files
+        const fileMarkerRegex = /<<<FILE:\s*([^>\s]+)>>>\n([\s\S]*?)<<<END_FILE>>>/g;
+        const files = [];
+        let m;
+        while ((m = fileMarkerRegex.exec(cleaned)) !== null) {
+            const filePath = m[1].trim();
+            const content = m[2].replace(/\r\n/g, '\n');
+            files.push({ path: filePath, content: content });
+        }
+
+        if (files.length > 0) {
+            // Return a special object to signal multiple files
+            return { files };
+        }
+
+        // Otherwise return the single HTML string
+        return cleaned;
 
         } catch (error) {
                 console.error('Error calling OpenAI Responses API:', error);
@@ -547,16 +585,27 @@ app.post('/api-endpoint', async (req, res) => {
         const repoName = task; // Use the unique task as the repo name
 
         // 4. Generate app content with LLM
-        const appContent = await generateAppWithLLM(brief);
-        const readmeContent = createReadmeContent(repoName, brief);
-        const licenseContent = getLicenseContent();
+        const llmResult = await generateAppWithLLM(brief);
 
-        // 5. Create file payloads
-        const filesToCommit = [
-            { path: 'index.html', content: appContent },
-            { path: 'README.md', content: readmeContent },
-            { path: 'LICENSE', content: licenseContent },
-        ];
+        // 5. Create file payloads. LLM may return a single HTML string or an object { files: [...] }
+        let filesToCommit = [];
+        if (llmResult && typeof llmResult === 'object' && Array.isArray(llmResult.files)) {
+            // Use files returned by LLM. Ensure a README and LICENSE exist (add defaults if missing)
+            filesToCommit = llmResult.files.map(f => ({ path: f.path, content: f.content }));
+            const hasReadme = filesToCommit.some(f => f.path.toLowerCase() === 'readme.md');
+            const hasLicense = filesToCommit.some(f => f.path.toLowerCase() === 'license');
+            if (!hasReadme) filesToCommit.push({ path: 'README.md', content: createReadmeContent(repoName, brief) });
+            if (!hasLicense) filesToCommit.push({ path: 'LICENSE', content: getLicenseContent() });
+        } else {
+            const appContent = llmResult;
+            const readmeContent = createReadmeContent(repoName, brief);
+            const licenseContent = getLicenseContent();
+            filesToCommit = [
+                { path: 'index.html', content: appContent },
+                { path: 'README.md', content: readmeContent },
+                { path: 'LICENSE', content: licenseContent },
+            ];
+        }
         
         // 6. Push to GitHub (create or update)
         const isRevision = (round === 2);
