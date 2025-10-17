@@ -1,0 +1,17 @@
+{
+  "name": "auto-app-builder",
+  "version": "1.0.0",
+  "description": "A server that automatically builds and deploys web apps via an API.",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "author": "Macklin Chriss Miranda",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "octokit": "^3.1.2"
+  }
+}
